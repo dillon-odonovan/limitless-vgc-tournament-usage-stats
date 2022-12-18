@@ -3,8 +3,9 @@ from io import TextIOWrapper
 from os import makedirs
 from os.path import basename, dirname, exists, relpath
 from pathvalidate import sanitize_filename
-import requests
+from requests import get
 from time import sleep
+from typing import NamedTuple
 
 
 FILE_DOWNLOAD_SLEEP_TIME = 0.5
@@ -13,20 +14,20 @@ LIMITLESS_BASE_URL = 'https://play.limitlesstcg.com'
 
 def main() -> None:
     tournament_id = ask_tournament_id()
-    parsed_standings = download_and_parse_tournament_standings(tournament_id)
-    teamsheet_urls = get_teamsheet_urls(parsed_standings)
+    tournament = download_and_parse_tournament_standings(
+        tournament_id)
+    teamsheet_urls = get_teamsheet_urls(tournament.parsed_standings)
     download_teamsheets(teamsheet_urls)
-    teams = get_teams(parsed_standings)
+    teams = get_teams(tournament.parsed_standings)
     top_cut_teams = get_top_cut_teams(teams)
-
-    # pokemon = get_pokemon_from_teams(teams)
-    # top_sixteen_pokemon = get_pokemon_from_teams(top_cut_teams)
-    # pokemon_usage = get_pokemon_usage(pokemon)
-    # top_sixteen_usage = get_pokemon_usage(top_sixteen_pokemon)
-    # ordered_pokemon_usage = order_pokemon_by_usage(pokemon_usage)
-    # ordered_top_sixteen_usage = order_pokemon_by_usage(top_sixteen_usage)
-    # write_ordered_pokemon_usage_to_file(
-    #     file_path, len(teams), ordered_pokemon_usage, ordered_top_sixteen_usage)
+    all_usage_stats = calculate_usage_statistics(teams)
+    top_cut_usage_stats = calculate_usage_statistics(top_cut_teams)
+    write_usage_to_file(tournament_id,
+                        tournament.tournament_name,
+                        len(top_cut_teams),
+                        top_cut_usage_stats,
+                        len(teams),
+                        all_usage_stats)
 
 
 def ask_tournament_id() -> str:
@@ -38,7 +39,12 @@ def ask_tournament_id() -> str:
     return input('Enter Limitless Tournament ID: ')
 
 
-def download_and_parse_tournament_standings(tournament_id: str) -> BeautifulSoup:
+class Tournament(NamedTuple):
+    tournament_name: str
+    parsed_standings: BeautifulSoup
+
+
+def download_and_parse_tournament_standings(tournament_id: str) -> Tournament:
     """Download and parse the Limitless tournament standings.
 
     For the provided tournament_id, download the tournament standings from the Limitless website and return as parsed BeautifulSoup.
@@ -49,20 +55,21 @@ def download_and_parse_tournament_standings(tournament_id: str) -> BeautifulSoup
     Returns:
         BeautifulSoup: The parsed standings represented as Beautiful Soup
     """
-    standings = requests.get(
+    standings = get(
         f'{LIMITLESS_BASE_URL}/tournament/{tournament_id}/standings')
     parsed_standings = BeautifulSoup(
-        standings.text, features='html.parser')
+        standings.text.encode('utf-8', 'ignore'), features='html.parser')
     tournament_name = parsed_standings.find(
-        'div', class_=class_is_name).contents[0]
-    standings_filename = f'./tournament/{tournament_id}/standings/{sanitize_filename(tournament_name)}.html'
+        'div', class_=is_class_name).contents[0]
+    sanitized_tournament_name = sanitize_filename(tournament_name)
+    standings_filename = f'./tournament/{tournament_id}/standings/{sanitized_tournament_name}.html'
     makedirs(dirname(standings_filename), exist_ok=True)
     with open(standings_filename, 'w', encoding='utf-8') as standings_file:
         standings_file.write(standings.text)
-    return parsed_standings
+    return Tournament(sanitized_tournament_name, parsed_standings)
 
 
-def class_is_name(class_: str) -> bool:
+def is_class_name(class_: str) -> bool:
     """Determines whether the HTML class is 'name'
 
     Args:
@@ -72,6 +79,39 @@ def class_is_name(class_: str) -> bool:
         bool: True if class_ is 'name'; else, False.
     """
     return class_ == 'name'
+
+
+def get_teamsheet_urls(parsed_standings: BeautifulSoup) -> list[str]:
+    """Get all teamsheet URLs from the parsed HTML
+
+    Args:
+        parsed_standings: The BeautifulSoup representation of the tournament standings
+
+    Returns:
+        list[str]: A list of all teamsheet relative URLs
+    """
+    return [a['href']
+            for a in parsed_standings.find_all('a')
+            if a.has_attr('href')
+            and a['href'].endswith('teamlist')]
+
+
+def download_teamsheets(teamsheet_urls: list[str]) -> None:
+    """Download all teamsheets from the list of URLs
+
+    Downloads each teamsheet from the Limitless website, provided it does not already exist on disk.
+
+    Args:
+        teamsheet_urls: The list of relative URLs of tournament teamsheets to download
+    """
+    for teamsheet_url in teamsheet_urls:
+        teamsheet_file_path = f'.{teamsheet_url}.html'
+        if not exists(teamsheet_file_path):
+            teamsheet = get(f'{LIMITLESS_BASE_URL}{teamsheet_url}')
+            makedirs(dirname(teamsheet_file_path), exist_ok=True)
+            with open(teamsheet_file_path, 'w', encoding='utf-8') as teamsheet_file:
+                teamsheet_file.write(teamsheet.text)
+            sleep(FILE_DOWNLOAD_SLEEP_TIME)
 
 
 def get_teams(parsed_standings: BeautifulSoup) -> ResultSet:
@@ -151,72 +191,207 @@ def get_top_cut_teams(teams: ResultSet) -> ResultSet:
         return teams[:top_cut_size]
 
 
-def get_teamsheet_urls(parsed_html: BeautifulSoup) -> list[str]:
-    """
+class PokemonStats:
+    def __init__(self):
+        self.count = 0
+        self.item = {}
+        self.ability = {}
+        self.tera = {}
+        self.attacks = {}
 
-    """
-    return [a['href']
-            for a in parsed_html.find_all('a')
-            if a.has_attr('href')
-            and a['href'].endswith('teamlist')]
+
+def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
+    all_pokemon_statistics: dict[str, PokemonStats] = {}
+
+    for team in teams:
+        tds = team.find_all('td')
+        teamlist_href = tds[8].a['href']
+        with open(f'.{teamlist_href}.html', 'r') as teamlist:
+            teamlist_parsed = BeautifulSoup(
+                teamlist, features='html.parser', from_encoding='utf-8')
+            pokemon_used = teamlist_parsed.find_all(
+                'div', class_=is_class_pkmn)
+            for pokemon in pokemon_used:
+                pokemon_name_div = pokemon.find(
+                    'div', class_=is_class_name)
+                pokemon_name = pokemon_name_div.span.text
+
+                pokemon_stats: PokemonStats
+                if pokemon_name in all_pokemon_statistics:
+                    pokemon_stats = all_pokemon_statistics[pokemon_name]
+                else:
+                    pokemon_stats = PokemonStats()
+                    all_pokemon_statistics[pokemon_name] = pokemon_stats
+
+                pokemon_stats.count += 1
+
+                pokemon_details = pokemon.find('div', class_=is_class_details)
+
+                pokemon_item = pokemon_details.find(
+                    'div', class_=is_class_item).text
+                add_or_update_dict(pokemon_stats.item, pokemon_item)
+
+                pokemon_ability = pokemon_details.find(
+                    'div', class_=is_class_ability).text.split('Ability: ')[1]
+                add_or_update_dict(pokemon_stats.ability, pokemon_ability)
+
+                pokemon_tera_div = pokemon_details.find(
+                    'div', class_=is_class_tera)
+                pokemon_tera = pokemon_tera_div.text.split(
+                    'Tera Type: ')[1] if pokemon_tera_div is not None else 'default'
+                add_or_update_dict(pokemon_stats.tera, pokemon_tera)
+
+                pokemon_attacks = pokemon.find('ul', class_=is_class_attacks)
+                for attack_li in pokemon_attacks.find_all('li'):
+                    attack = attack_li.text
+                    add_or_update_dict(pokemon_stats.attacks, attack)
+
+    return all_pokemon_statistics
 
 
-def download_teamsheets(teamsheet_urls: list[str]) -> None:
-    """Download all teamsheets from the list of URLs
-
-    Downloads each teamsheet from the Limitless website, provided it does not already exist on disk.
+def add_or_update_dict(dict: dict[str, int], key: str) -> None:
+    """Adds the key to dict or updates its count in the dict if present.
 
     Args:
-        teamsheet_urls: The list of relative URLs of tournament teamsheets to download
+        dict: The dict to modify
+        key: The key in the dict to add or update
     """
-    for teamsheet_url in teamsheet_urls:
-        teamsheet_file_path = f'.{teamsheet_url}.html'
-        if not exists(teamsheet_file_path):
-            teamsheet = requests.get(f'{LIMITLESS_BASE_URL}{teamsheet_url}')
-            makedirs(dirname(teamsheet_file_path), exist_ok=True)
-            with open(teamsheet_file_path, 'w', encoding='utf-8') as teamsheet_file:
-                teamsheet_file.write(teamsheet.text)
-            sleep(FILE_DOWNLOAD_SLEEP_TIME)
+    if key in dict:
+        dict[key] += 1
+    else:
+        dict[key] = 1
 
 
-def get_pokemon_from_teams(teams: ResultSet) -> list[str]:
-    return [span['title']
-            for team in teams
-            for span in team.find_all('span')
-            if span.has_attr('title')]
+def is_class_pkmn(class_: str) -> bool:
+    """Determines whether the HTML class is 'pkmn'
+
+    Args:
+        class_: The HTML class
+
+    Returns:
+        bool: True if class_ is 'pkmn'; else, False.
+    """
+    return class_ == 'pkmn'
 
 
-def get_pokemon_usage(pokemon: list[str]) -> dict[str, int]:
-    pokemon_usage = {}
-    for poke in pokemon:
-        if poke in pokemon_usage:
-            pokemon_usage[poke] += 1
-        else:
-            pokemon_usage[poke] = 1
-    return pokemon_usage
+def is_class_details(class_: str) -> bool:
+    """Determines whether the HTML class is 'details'
+
+    Args:
+        class_: The HTML class
+
+    Returns:
+        bool: True if class_ is 'details'; else, False.
+    """
+    return class_ == 'details'
 
 
-def order_pokemon_by_usage(pokemon_usage: dict[str, int]) -> dict[str, int]:
+def is_class_item(class_: str) -> bool:
+    """Determines whether the HTML class is 'item'
+
+    Args:
+        class_: The HTML class
+
+    Returns:
+        bool: True if class_ is 'item'; else, False.
+    """
+    return class_ == 'item'
+
+
+def is_class_ability(class_: str) -> bool:
+    """Determines whether the HTML class is 'ability'
+
+    Args:
+        class_: The HTML class
+
+    Returns:
+        bool: True if class_ is 'ability'; else, False.
+    """
+    return class_ == 'ability'
+
+
+def is_class_tera(class_: str) -> bool:
+    """Determines whether the HTML class is 'tera'
+
+    Args:
+        class_: The HTML class
+
+    Returns:
+        bool: True if class_ is 'tera'; else, False.
+    """
+    return class_ == 'tera'
+
+
+def is_class_attacks(class_: str) -> bool:
+    """Determines whether the HTML class is 'attacks'
+
+    Args:
+        class_: The HTML class
+
+    Returns:
+        bool: True if class_ is 'attacks'; else, False.
+    """
+    return class_ == 'attacks'
+
+
+def write_usage_to_file(tournament_id: str,
+                        tournament_name: str,
+                        num_top_cut_teams: int,
+                        top_cut_usage_stats: dict[str, PokemonStats],
+                        num_teams: int,
+                        all_usage_stats: dict[str, PokemonStats]):
+    ordered_top_cut_usage_stats = {key: val for key, val in sorted(
+        top_cut_usage_stats.items(), key=lambda item: item[1].count, reverse=True)}
+    ordered_usage_stats = {key: val for key, val in sorted(
+        all_usage_stats.items(), key=lambda item: item[1].count, reverse=True)}
+    filepath = f'./tournament/{tournament_id}/usage/{tournament_name} Usage.txt'
+    makedirs(dirname(filepath), exist_ok=True)
+    with open(filepath, 'w', encoding='utf-8') as usage_stats_file:
+        usage_stats_file.write(f'{tournament_name} ({tournament_id})\n')
+        usage_stats_file.write('\n')
+        usage_stats_file.write(f'Top cut: {num_top_cut_teams}\n')
+        usage_stats_file.write('Top cut usage:\n')
+        write_usage_stats(usage_stats_file,
+                          ordered_top_cut_usage_stats, num_top_cut_teams)
+        usage_stats_file.write('\n')
+        usage_stats_file.write(f'Entrants: {num_teams}\n')
+        usage_stats_file.write('All usage:\n')
+        write_usage_stats(usage_stats_file, ordered_usage_stats, num_teams)
+
+
+def write_usage_stats(file: TextIOWrapper, usage_stats: dict[str, PokemonStats], num_teams: int):
+    for index, (pokemon, pokemon_stats) in enumerate(usage_stats.items()):
+        file.write(
+            f'\t{get_stat(index, pokemon, pokemon_stats.count, num_teams)}\n')
+        file.write('\t\tAbility:\n')
+        write_stat(file, pokemon_stats.ability, pokemon_stats.count)
+        file.write('\t\tTera:\n')
+        write_stat(file, pokemon_stats.tera, pokemon_stats.count)
+        file.write('\t\tItem:\n')
+        write_stat(file, pokemon_stats.item, pokemon_stats.count)
+        file.write('\t\tAttacks:\n')
+        write_stat(file, pokemon_stats.attacks, pokemon_stats.count)
+
+
+def write_stat(file: TextIOWrapper, dict: dict[str, int], total: int):
+    for i, (item, count) in enumerate(order_dict_by_count(dict).items()):
+        file.write(
+            f'\t\t\t{get_stat(i, item, count, total)}\n')
+
+
+def order_dict_by_count(d: dict[str, int]) -> dict[str, int]:
     return {key: val
-            for key, val in sorted(pokemon_usage.items(),
+            for key, val in sorted(d.items(),
                                    key=lambda item: item[1],
                                    reverse=True)}
 
 
-def write_ordered_pokemon_usage_to_file(file_path: str, num_teams: int, ordered_pokemon_usage: dict[str, int], ordered_top_sixteen_usage: dict[str, int]) -> None:
-    with open(f'./{dirname(relpath(file_path))}/{basename(file_path)}-Usage.txt', 'w', encoding='utf-8') as usage_stats_file:
-        usage_stats_file.write(f'Entrants: {num_teams}\n\n')
-        usage_stats_file.write('Top 16 Usage:\n')
-        write_usage_stats(usage_stats_file, ordered_top_sixteen_usage, 16)
-        usage_stats_file.write('\n')
-        usage_stats_file.write('All Usage:\n')
-        write_usage_stats(usage_stats_file, ordered_pokemon_usage, num_teams)
+def get_stat(index: int, name: str, count: int, total: int):
+    return f'{index + 1}. {name}: {get_percentage(count, total)}% ({count})'
 
 
-def write_usage_stats(file: TextIOWrapper, usage_stats: dict[str, int], num_teams: int):
-    for index, (pokemon, num_used) in enumerate(usage_stats.items()):
-        file.write(
-            f'{index + 1}. {pokemon}: {round(100 * num_used / num_teams, 2)}% ({num_used})\n')
+def get_percentage(a, b):
+    return round(100 * a / b, 2)
 
 
 if __name__ == '__main__':
