@@ -55,6 +55,7 @@ def download_and_parse_tournament_standings(tournament_id: str) -> Tournament:
     Returns:
         BeautifulSoup: The parsed standings represented as Beautiful Soup
     """
+    print("Downloading standings...")
     standings = get(
         f'{LIMITLESS_BASE_URL}/tournament/{tournament_id}/standings')
     parsed_standings = BeautifulSoup(
@@ -104,6 +105,7 @@ def download_teamsheets(teamsheet_urls: list[str]) -> None:
     Args:
         teamsheet_urls: The list of relative URLs of tournament teamsheets to download
     """
+    print("Downloading teamsheets...")
     for teamsheet_url in teamsheet_urls:
         teamsheet_file_path = f'.{teamsheet_url}.html'
         if not exists(teamsheet_file_path):
