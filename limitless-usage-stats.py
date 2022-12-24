@@ -208,8 +208,7 @@ def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
     all_pokemon_statistics: dict[str, PokemonStats] = {}
 
     for team in teams:
-        tds = team.find_all('td')
-        teamlist_href = tds[8].a['href']
+        teamlist_href = team.find('a', href=href_ends_with_teamlist)['href']
         with open(f'.{teamlist_href}.html', 'r') as teamlist:
             teamlist_parsed = BeautifulSoup(
                 teamlist, features='html.parser', from_encoding='utf-8')
@@ -251,6 +250,18 @@ def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
                     add_or_update_dict(pokemon_stats.attacks, attack)
 
     return all_pokemon_statistics
+
+
+def href_ends_with_teamlist(href: str) -> bool:
+    """Determines whether the href attribute ends with 'teamlist'
+
+    Args:
+        href: The HTML href attribute
+
+    Returns:
+        bool: True if href ends with 'teamlist'; else, False.
+    """
+    return href.endswith('teamlist')
 
 
 def add_or_update_dict(dict: dict[str, int], key: str) -> None:
