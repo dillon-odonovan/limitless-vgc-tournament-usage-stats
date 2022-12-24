@@ -1,14 +1,14 @@
 from bs4 import BeautifulSoup, ResultSet, Tag
 from io import TextIOWrapper
 from os import makedirs
-from os.path import basename, dirname, exists, relpath
+from os.path import dirname, exists
 from pathvalidate import sanitize_filename
 from requests import get
 from time import sleep
 from typing import NamedTuple
 
 
-FILE_DOWNLOAD_SLEEP_TIME = 0.5
+FILE_DOWNLOAD_SLEEP_TIME = 0.33
 LIMITLESS_BASE_URL = 'https://play.limitlesstcg.com'
 
 
@@ -67,6 +67,7 @@ def download_and_parse_tournament_standings(tournament_id: str) -> Tournament:
     makedirs(dirname(standings_filename), exist_ok=True)
     with open(standings_filename, 'w', encoding='utf-8') as standings_file:
         standings_file.write(standings.text)
+    print("Done downloading standings.")
     return Tournament(sanitized_tournament_name, parsed_standings)
 
 
@@ -114,6 +115,7 @@ def download_teamsheets(teamsheet_urls: list[str]) -> None:
             with open(teamsheet_file_path, 'w', encoding='utf-8') as teamsheet_file:
                 teamsheet_file.write(teamsheet.text)
             sleep(FILE_DOWNLOAD_SLEEP_TIME)
+    print("Done downloading teamsheets.")
 
 
 def get_teams(parsed_standings: BeautifulSoup) -> ResultSet:
