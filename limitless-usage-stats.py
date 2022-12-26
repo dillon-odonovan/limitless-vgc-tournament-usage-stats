@@ -5,7 +5,7 @@ from os.path import dirname, exists
 from pathvalidate import sanitize_filename
 from requests import get
 from time import sleep
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 
 FILE_DOWNLOAD_SLEEP_TIME = 0.33
@@ -145,8 +145,7 @@ def is_tr_and_has_data_placing_attr(tag: Tag) -> bool:
 def get_top_cut_teams(teams: ResultSet) -> ResultSet:
     """Gets all of the teams that top cut the event
 
-    For tournaments with 2 days of Swiss all teams with 2 or fewer losses after the first day of swiss are considered top cut teams.
-    If only a single day of swiss then the user will input what the size of the top cut was for that tournament.
+    The user will input what the size of the top cut was for the tournament.
 
     Args:
         teams: The list of all teams that participated in the tournament
@@ -154,45 +153,18 @@ def get_top_cut_teams(teams: ResultSet) -> ResultSet:
     Returns:
         ResultSet: The subset of teams that made top cut
     """
-    num_days_swiss = 0
+    top_cut_size = 0
+    num_teams = len(teams)
     while True:
         try:
-            num_days_swiss = int(input('Were there 1 or 2 days of swiss? '))
-            if num_days_swiss <= 0 or num_days_swiss > 2:
+            top_cut_size = int(input('What was the size of top cut? '))
+            if top_cut_size <= 0 or top_cut_size > num_teams:
                 raise Exception()
             break
-        except Exception:
-            print("Please enter '1' or '2' for number of days of swiss.")
-
-    if num_days_swiss == 2:
-        num_day_one_swiss_rounds = 0
-        while True:
-            try:
-                num_day_one_swiss_rounds = int(
-                    input('How many rounds of swiss were there on day 1? '))
-                if num_day_one_swiss_rounds <= 0:
-                    raise Exception()
-                break
-            except:
-                print(
-                    'Please enter a valid integer greater than 0 for number of swiss rounds on day 1.')
-
-        return [team
-                for team in teams
-                if int(team.find_all('td')[3].contents[0]) >= num_day_one_swiss_rounds - 2]
-    else:
-        top_cut_size = 0
-        num_teams = len(teams)
-        while True:
-            try:
-                top_cut_size = int(input('What was the size of top cut? '))
-                if top_cut_size <= 0 or top_cut_size > num_teams:
-                    raise Exception()
-                break
-            except:
-                print(
-                    f'Top cut size must be at least 1 and no more than the number of teams ({num_teams})')
-        return teams[:top_cut_size]
+        except:
+            print(
+                f'Top cut size must be at least 1 and no more than the number of teams ({num_teams})')
+    return teams[:top_cut_size]
 
 
 class PokemonStats:
@@ -202,6 +174,7 @@ class PokemonStats:
         self.ability = {}
         self.tera = {}
         self.attacks = {}
+        self.teammates = {}
 
 
 def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
@@ -215,9 +188,7 @@ def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
             pokemon_used = teamlist_parsed.find_all(
                 'div', class_=is_class_pkmn)
             for pokemon in pokemon_used:
-                pokemon_name_div = pokemon.find(
-                    'div', class_=is_class_name)
-                pokemon_name = pokemon_name_div.span.text
+                pokemon_name = get_pokemon_name(pokemon)
 
                 pokemon_stats: PokemonStats
                 if pokemon_name in all_pokemon_statistics:
@@ -249,6 +220,12 @@ def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
                     attack = attack_li.text
                     add_or_update_dict(pokemon_stats.attacks, attack)
 
+                teammates = [get_pokemon_name(p)
+                             for p in pokemon_used
+                             if not get_pokemon_name(p) == pokemon_name]
+                for teammate in teammates:
+                    add_or_update_dict(pokemon_stats.teammates, teammate)
+
     return all_pokemon_statistics
 
 
@@ -262,6 +239,19 @@ def href_ends_with_teamlist(href: str) -> bool:
         bool: True if href ends with 'teamlist'; else, False.
     """
     return href.endswith('teamlist')
+
+
+def get_pokemon_name(pokemon: Any) -> str:
+    """Gets the name of the Pokemon from the HTML
+
+    Args:
+        pokemon: The HTML representation of the Pokemon
+
+    Returns:
+        str: The name of the Pokemon
+    """
+    pokemon_name_div = pokemon.find('div', class_=is_class_name)
+    return pokemon_name_div.span.text
 
 
 def add_or_update_dict(dict: dict[str, int], key: str) -> None:
@@ -386,6 +376,8 @@ def write_usage_stats(file: TextIOWrapper, usage_stats: dict[str, PokemonStats],
         write_stat(file, pokemon_stats.item, pokemon_stats.count)
         file.write('\t\tAttacks:\n')
         write_stat(file, pokemon_stats.attacks, pokemon_stats.count)
+        file.write('\t\tTeammates:\n')
+        write_stat(file, pokemon_stats.teammates, pokemon_stats.count)
 
 
 def write_stat(file: TextIOWrapper, dict: dict[str, int], total: int):
