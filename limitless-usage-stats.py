@@ -1,5 +1,9 @@
 from bs4 import BeautifulSoup, ResultSet, Tag
 from io import TextIOWrapper
+from math import sqrt
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
+import numpy as np
 from os import makedirs
 from os.path import dirname, exists
 from pathvalidate import sanitize_filename
@@ -10,6 +14,13 @@ from typing import Any, NamedTuple
 
 FILE_DOWNLOAD_SLEEP_TIME = 0.33
 LIMITLESS_BASE_URL = 'https://play.limitlesstcg.com'
+DEFAULT_LABEL_PADDING = .0015
+LABEL_PADDING_INCREMENT = .0025
+LABEL_FONT_SIZE = 6
+POINT_DISTANCE_LABEL_ADJUSTMENT_THRESHOLD = .01
+AXIS_MIN = 0
+AXIS_MAX_BUFFER = 0.1
+AXIS_TICK_MAX = 1.0
 
 
 def main() -> None:
@@ -22,12 +33,14 @@ def main() -> None:
     top_cut_teams = get_top_cut_teams(teams)
     all_usage_stats = calculate_usage_statistics(teams)
     top_cut_usage_stats = calculate_usage_statistics(top_cut_teams)
-    write_usage_to_file(tournament_id,
-                        tournament.tournament_name,
-                        len(top_cut_teams),
-                        top_cut_usage_stats,
-                        len(teams),
-                        all_usage_stats)
+    tournament_usage = TournamentUsage(tournament_id,
+                                       tournament.tournament_name,
+                                       len(top_cut_teams),
+                                       top_cut_usage_stats,
+                                       len(teams),
+                                       all_usage_stats)
+    write_usage_to_file(tournament_usage)
+    create_graph(tournament_usage)
 
 
 def ask_tournament_id() -> str:
@@ -339,29 +352,56 @@ def is_class_attacks(class_: str) -> bool:
     return class_ == 'attacks'
 
 
-def write_usage_to_file(tournament_id: str,
-                        tournament_name: str,
-                        num_top_cut_teams: int,
-                        top_cut_usage_stats: dict[str, PokemonStats],
-                        num_teams: int,
-                        all_usage_stats: dict[str, PokemonStats]):
-    ordered_top_cut_usage_stats = {key: val for key, val in sorted(
-        top_cut_usage_stats.items(), key=lambda item: item[1].count, reverse=True)}
-    ordered_usage_stats = {key: val for key, val in sorted(
-        all_usage_stats.items(), key=lambda item: item[1].count, reverse=True)}
-    filepath = f'./tournament/{tournament_id}/usage/{tournament_name} Usage.txt'
-    makedirs(dirname(filepath), exist_ok=True)
-    with open(filepath, 'w', encoding='utf-8') as usage_stats_file:
+def sort_by_usage_then_alphabetical(item: tuple[str, PokemonStats]):
+    return (-item[1].count, item[0])
+
+
+class TournamentUsage:
+    def __init__(self,
+                 tournament_id: str,
+                 tournament_name: str,
+                 top_cut_size: int,
+                 top_cut_usage: PokemonStats,
+                 size: int,
+                 all_usage: PokemonStats) -> None:
+        self.tournament_id = tournament_id
+        self.tournament_name = tournament_name
+        self.top_cut_size = top_cut_size
+        self.top_cut_usage: dict[str, PokemonStats] = {
+            key: val
+            for key, val in sorted(top_cut_usage.items(),
+                                   key=lambda item: sort_by_usage_then_alphabetical(item))
+        }
+        self.size = size
+        self.all_usage: dict[str, PokemonStats] = {
+            key: val
+            for key, val in sorted(all_usage.items(),
+                                   key=lambda item: sort_by_usage_then_alphabetical(item))
+        }
+
+
+def write_usage_to_file(tournament_usage: TournamentUsage):
+    tournament_id = tournament_usage.tournament_id
+    tournament_name = tournament_usage.tournament_name
+    usage_dir = f'./tournament/{tournament_id}/usage'
+    file_name = f'{tournament_name} Usage'
+
+    usage_filepath = f'{usage_dir}/{file_name}.txt'
+    makedirs(dirname(usage_filepath), exist_ok=True)
+    with open(usage_filepath, 'w', encoding='utf-8') as usage_stats_file:
         usage_stats_file.write(f'{tournament_name} ({tournament_id})\n')
         usage_stats_file.write('\n')
-        usage_stats_file.write(f'Top cut: {num_top_cut_teams}\n')
+
+        usage_stats_file.write(f'Top cut: {tournament_usage.top_cut_size}\n')
         usage_stats_file.write('Top cut usage:\n')
-        write_usage_stats(usage_stats_file,
-                          ordered_top_cut_usage_stats, num_top_cut_teams)
+        write_usage_stats(
+            usage_stats_file, tournament_usage.top_cut_usage, tournament_usage.top_cut_size)
         usage_stats_file.write('\n')
-        usage_stats_file.write(f'Entrants: {num_teams}\n')
+
+        usage_stats_file.write(f'Entrants: {tournament_usage.size}\n')
         usage_stats_file.write('All usage:\n')
-        write_usage_stats(usage_stats_file, ordered_usage_stats, num_teams)
+        write_usage_stats(usage_stats_file,
+                          tournament_usage.all_usage, tournament_usage.size)
 
 
 def write_usage_stats(file: TextIOWrapper, usage_stats: dict[str, PokemonStats], num_teams: int):
@@ -389,7 +429,8 @@ def write_stat(file: TextIOWrapper, dict: dict[str, int], total: int):
 def order_dict_by_count(d: dict[str, int]) -> dict[str, int]:
     return {key: val
             for key, val in sorted(d.items(),
-                                   key=lambda item: item[1],
+                                   # count then alphabetical
+                                   key=lambda item: (item[1], item[0]),
                                    reverse=True)}
 
 
@@ -399,6 +440,88 @@ def get_stat(index: int, name: str, count: int, total: int):
 
 def get_percentage(a, b):
     return round(100 * a / b, 2)
+
+
+class UsagePoint:
+    def __init__(self, total_usage_rate, top_cut_usage_rate, label) -> None:
+        self.total_usage_rate = total_usage_rate
+        self.top_cut_usage_rate = top_cut_usage_rate
+        self.label = label
+
+
+def create_graph(tournament_usage: TournamentUsage) -> None:
+    pokemon_to_show = {
+        pokemon for pokemon in tournament_usage.top_cut_usage.keys()}
+    for pokemon, pokemon_stats in tournament_usage.all_usage.items():
+        if pokemon_stats.count / tournament_usage.size >= 0.03:
+            pokemon_to_show.add(pokemon)
+
+    usage_points: list[UsagePoint] = []
+    for pokemon in pokemon_to_show:
+        usage_point = UsagePoint(tournament_usage.all_usage[pokemon].count / tournament_usage.size,
+                                 tournament_usage.top_cut_usage[pokemon].count /
+                                 tournament_usage.top_cut_size
+                                 if pokemon in tournament_usage.top_cut_usage
+                                 else 0,
+                                 pokemon)
+        usage_points.append(usage_point)
+
+    usage_points = sorted(usage_points,
+                          key=lambda point: (
+                              point.top_cut_usage_rate, point.total_usage_rate),
+                          reverse=True)
+
+    fig, ax = plt.subplots()
+    line = np.linspace(0, 1)
+    ax.scatter([usage.total_usage_rate for usage in usage_points], [
+               usage.top_cut_usage_rate for usage in usage_points])
+    ax.plot(line, line, linewidth=0.25)
+
+    label_padding = DEFAULT_LABEL_PADDING
+    for index, usage_point in enumerate(usage_points):
+        if index > 0 and index < len(usage_points):
+            prev_usage_point = usage_points[index - 1]
+
+            # sqrt[ (x2-x1)^2 + (y2-y1)^2 ]
+            distance_between_points = sqrt(
+                (usage_point.total_usage_rate - prev_usage_point.total_usage_rate) ** 2 +
+                (usage_point.top_cut_usage_rate -
+                 prev_usage_point.top_cut_usage_rate) ** 2
+            )
+
+            if distance_between_points <= POINT_DISTANCE_LABEL_ADJUSTMENT_THRESHOLD:
+                label_padding += LABEL_PADDING_INCREMENT
+            else:
+                label_padding = DEFAULT_LABEL_PADDING
+
+        ax.text(usage_point.total_usage_rate,
+                usage_point.top_cut_usage_rate + label_padding,
+                usage_point.label,
+                size=LABEL_FONT_SIZE)
+
+    most_used = first_key_in_dict(tournament_usage.all_usage)
+    ax.set_xlim(
+        AXIS_MIN, tournament_usage.all_usage[most_used].count / tournament_usage.size + AXIS_MAX_BUFFER)
+
+    most_used_in_top_cut = first_key_in_dict(tournament_usage.top_cut_usage)
+    ax.set_ylim(
+        AXIS_MIN, tournament_usage.top_cut_usage[most_used_in_top_cut].count / tournament_usage.top_cut_size + AXIS_MAX_BUFFER)
+
+    ax.grid(visible=True, which='both')
+    ax.set_title(
+        f'{tournament_usage.tournament_name} ({tournament_usage.tournament_id}) Usage Stats')
+
+    ax.set_xlabel('Total Usage Rate (Percent)')
+    ax.xaxis.set_major_formatter(PercentFormatter(AXIS_TICK_MAX))
+
+    ax.set_ylabel('Top Cut Usage Rate (Percent)')
+    ax.yaxis.set_major_formatter(PercentFormatter(AXIS_TICK_MAX))
+
+    plt.show()
+
+
+def first_key_in_dict(d: dict[str, Any]) -> str:
+    return next(iter(d.keys()))
 
 
 if __name__ == '__main__':
