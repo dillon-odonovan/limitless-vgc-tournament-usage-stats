@@ -19,6 +19,7 @@ LABEL_PADDING_INCREMENT = .0025
 LABEL_FONT_SIZE = 6
 POINT_DISTANCE_LABEL_ADJUSTMENT_THRESHOLD = .01
 AXIS_MIN = 0
+AXIS_ZOOMED_IN_MAX = 0.2
 AXIS_MAX_BUFFER = 0.1
 AXIS_TICK_MAX = 1.0
 
@@ -383,10 +384,10 @@ class TournamentUsage:
 def write_usage_to_file(tournament_usage: TournamentUsage):
     tournament_id = tournament_usage.tournament_id
     tournament_name = tournament_usage.tournament_name
-    usage_dir = f'./tournament/{tournament_id}/usage'
+    output_dir = get_output_dir(tournament_id)
     file_name = f'{tournament_name} Usage'
 
-    usage_filepath = f'{usage_dir}/{file_name}.txt'
+    usage_filepath = f'{output_dir}/{file_name}.txt'
     makedirs(dirname(usage_filepath), exist_ok=True)
     with open(usage_filepath, 'w', encoding='utf-8') as usage_stats_file:
         usage_stats_file.write(f'{tournament_name} ({tournament_id})\n')
@@ -402,6 +403,10 @@ def write_usage_to_file(tournament_usage: TournamentUsage):
         usage_stats_file.write('All usage:\n')
         write_usage_stats(usage_stats_file,
                           tournament_usage.all_usage, tournament_usage.size)
+
+
+def get_output_dir(tournament_id: str) -> str:
+    return f'./tournament/{tournament_id}/usage'
 
 
 def write_usage_stats(file: TextIOWrapper, usage_stats: dict[str, PokemonStats], num_teams: int):
@@ -499,14 +504,6 @@ def create_graph(tournament_usage: TournamentUsage) -> None:
                 usage_point.label,
                 size=LABEL_FONT_SIZE)
 
-    most_used = first_key_in_dict(tournament_usage.all_usage)
-    ax.set_xlim(
-        AXIS_MIN, tournament_usage.all_usage[most_used].count / tournament_usage.size + AXIS_MAX_BUFFER)
-
-    most_used_in_top_cut = first_key_in_dict(tournament_usage.top_cut_usage)
-    ax.set_ylim(
-        AXIS_MIN, tournament_usage.top_cut_usage[most_used_in_top_cut].count / tournament_usage.top_cut_size + AXIS_MAX_BUFFER)
-
     ax.grid(visible=True, which='both')
     ax.set_title(
         f'{tournament_usage.tournament_name} ({tournament_usage.tournament_id}) Usage Stats')
@@ -517,7 +514,24 @@ def create_graph(tournament_usage: TournamentUsage) -> None:
     ax.set_ylabel('Top Cut Usage Rate (Percent)')
     ax.yaxis.set_major_formatter(PercentFormatter(AXIS_TICK_MAX))
 
-    plt.show()
+    most_used = first_key_in_dict(tournament_usage.all_usage)
+    most_used_in_top_cut = first_key_in_dict(tournament_usage.top_cut_usage)
+    output_dir = get_output_dir(tournament_usage.tournament_id)
+
+    ax.set_xlim(AXIS_MIN, AXIS_ZOOMED_IN_MAX)
+    ax.set_ylim(AXIS_MIN, AXIS_ZOOMED_IN_MAX)
+
+    plt.get_current_fig_manager().full_screen_toggle()
+
+    plt.savefig(
+        f'{output_dir}/{tournament_usage.tournament_name} Zoomed-In.png')
+
+    ax.set_xlim(AXIS_MIN,
+                tournament_usage.all_usage[most_used].count / tournament_usage.size + AXIS_MAX_BUFFER)
+    ax.set_ylim(AXIS_MIN,
+                tournament_usage.top_cut_usage[most_used_in_top_cut].count / tournament_usage.top_cut_size + AXIS_MAX_BUFFER)
+    plt.savefig(
+        f'{output_dir}/{tournament_usage.tournament_name} Zoomed-Out.png')
 
 
 def first_key_in_dict(d: dict[str, Any]) -> str:
