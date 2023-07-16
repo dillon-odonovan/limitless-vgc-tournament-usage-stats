@@ -1,5 +1,6 @@
 from bs4 import BeautifulSoup, ResultSet, Tag
 from io import TextIOWrapper
+import jsonpickle
 from math import sqrt
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
@@ -141,7 +142,20 @@ def get_teams(parsed_standings: BeautifulSoup) -> ResultSet:
     Returns:
         ResultSet: The list of teams used in the tournament as a ResultSet
     """
-    return parsed_standings.find_all(is_tr_and_has_data_placing_attr)
+    field_size = -1
+    while True:
+        try:
+            field_size_inp = input(
+                'How many teams you do want to consider? (Enter for all) ')
+            if field_size_inp == '':
+                break
+            field_size = int(field_size_inp)
+            if field_size <= 0:
+                raise Exception()
+            break
+        except:
+            print(f'Size of field must be at least 1')
+    return parsed_standings.find_all(is_tr_and_has_data_placing_attr)[:field_size]
 
 
 def is_tr_and_has_data_placing_attr(tag: Tag) -> bool:
@@ -189,12 +203,13 @@ class PokemonStats:
         self.tera = {}
         self.attacks = {}
         self.teammates = {}
+        self.placings = []
 
 
 def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
     all_pokemon_statistics: dict[str, PokemonStats] = {}
 
-    for team in teams:
+    for placing, team in enumerate(teams):
         teamlist_href = team.find('a', href=href_ends_with_teamlist)['href']
         with open(f'.{teamlist_href}.html', 'r') as teamlist:
             teamlist_parsed = BeautifulSoup(
@@ -239,6 +254,8 @@ def calculate_usage_statistics(teams: ResultSet) -> dict[str, PokemonStats]:
                              if not get_pokemon_name(p) == pokemon_name]
                 for teammate in teammates:
                     add_or_update_dict(pokemon_stats.teammates, teammate)
+
+                pokemon_stats.placings.append(placing + 1)
 
     return all_pokemon_statistics
 
@@ -404,6 +421,12 @@ def write_usage_to_file(tournament_usage: TournamentUsage):
         write_usage_stats(usage_stats_file,
                           tournament_usage.all_usage, tournament_usage.size)
 
+    with open(f'{output_dir}/{tournament_usage.tournament_id}-all.json', 'w', encoding='utf-8') as all_json:
+        all_json.write(jsonpickle.encode(tournament_usage.all_usage))
+
+    with open(f'{output_dir}/{tournament_usage.tournament_id}-top-cut.json', 'w', encoding='utf-8') as top_cut_json:
+        top_cut_json.write(jsonpickle.encode(tournament_usage.top_cut_usage))
+
 
 def get_output_dir(tournament_id: str) -> str:
     return f'./tournament/{tournament_id}/usage'
@@ -414,18 +437,25 @@ def write_usage_stats(file: TextIOWrapper, usage_stats: dict[str, PokemonStats],
         file.write(
             f'\t{get_stat(index, pokemon, pokemon_stats.count, num_teams)}\n')
         file.write('\t\tAbility:\n')
-        write_stat(file, pokemon_stats.ability, pokemon_stats.count)
+        write_dict_stat(file, pokemon_stats.ability, pokemon_stats.count)
         file.write('\t\tTera:\n')
-        write_stat(file, pokemon_stats.tera, pokemon_stats.count)
+        write_dict_stat(file, pokemon_stats.tera, pokemon_stats.count)
         file.write('\t\tItem:\n')
-        write_stat(file, pokemon_stats.item, pokemon_stats.count)
+        write_dict_stat(file, pokemon_stats.item, pokemon_stats.count)
         file.write('\t\tAttacks:\n')
-        write_stat(file, pokemon_stats.attacks, pokemon_stats.count)
+        write_dict_stat(file, pokemon_stats.attacks, pokemon_stats.count)
         file.write('\t\tTeammates:\n')
-        write_stat(file, pokemon_stats.teammates, pokemon_stats.count)
+        write_dict_stat(file, pokemon_stats.teammates, pokemon_stats.count)
+        file.write('\t\tPlacings:\n')
+        write_arr_stat(file, pokemon_stats.placings)
 
 
-def write_stat(file: TextIOWrapper, dict: dict[str, int], total: int):
+def write_arr_stat(file: TextIOWrapper, arr:  list[int]):
+    for value in arr:
+        file.write(f'\t\t\t{value}\n')
+
+
+def write_dict_stat(file: TextIOWrapper, dict: dict[str, int], total: int):
     for i, (item, count) in enumerate(order_dict_by_count(dict).items()):
         file.write(
             f'\t\t\t{get_stat(i, item, count, total)}\n')
