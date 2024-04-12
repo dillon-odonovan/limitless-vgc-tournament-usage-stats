@@ -142,7 +142,7 @@ def get_teams(parsed_standings: BeautifulSoup) -> ResultSet:
     Returns:
         ResultSet: The list of teams used in the tournament as a ResultSet
     """
-    field_size = -1
+    field_size = None
     while True:
         try:
             field_size_inp = input(
